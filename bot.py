@@ -1,6 +1,6 @@
 import os
 import telebot
-from yt_dlp import YoutubeDL
+import requests
 
 # @BotFather'dan aldığınız Token'ı buraya yazın
 BOT_TOKEN = "8849161569:AAEBdl4gnP7nwjLYHraO_VD0ygSjgavqNsk"
@@ -8,71 +8,51 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "Merhaba! Bana indirmek istediğin şarkının adını veya SoundCloud linkini yaz, hemen göndereyim. 🎵")
+    bot.reply_to(message, "Merhaba! Bana indirmek istediğin şarkının adını yaz, senin için hemen bulup göndereyim. 🎵")
 
 @bot.message_handler(func=lambda message: True)
-def search_and_send_music(message):
+def download_music(message):
     query = message.text
     chat_id = message.chat.id
     
-    status_msg = bot.send_message(chat_id, f"🔍 '{query}' aranıyor, lütfen bekleyin...")
-    
-    # YouTube engellerini aşmak için SoundCloud araması tanımlıyoruz
-    if query.startswith("http"):
-        search_query = query
-    else:
-        search_query = f"scsearch1:{query}" # SoundCloud üzerinde ara
-        
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': '%(title)s.%(ext)s',
-        'noplaylist': True,
-        'quiet': True,
-        'preferredcodec': 'mp3'
-    }
+    status_msg = bot.send_message(chat_id, f"🔍 '{query}' aranıyor ve hazırlanıyor, lütfen bekleyin...")
     
     try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(search_query, download=True)
+        # Ücretsiz ve engelsiz müzik arama/indirme API'si
+        search_url = f"https://deezer.com{query}&limit=1"
+        response = requests.get(search_url).json()
+        
+        if not response.get('data'):
+            bot.edit_message_text("❌ Aradığınız şarkı bulunamadı. Lütfen başka bir şarkı adı deneyin.", chat_id, status_msg.message_id)
+            return
             
-            if 'entries' in info and len(info['entries']) > 0:
-                video_info = info['entries']
-            else:
-                video_info = info
-                
-            filename = ydl.prepare_filename(video_info)
+        track = response['data'][0]
+        title = track['title']
+        artist = track['artist']['name']
+        audio_url = track['preview'] # Şarkının önizleme/ses dosyası linki
+        
+        if not audio_url:
+            bot.edit_message_text("❌ Şarkının ses dosyasına ulaşılamadı.", chat_id, status_msg.message_id)
+            return
             
-            # Dosya uzantısını kontrol et ve doğrula
-            if not os.path.exists(filename):
-                base, _ = os.path.splitext(filename)
-                for ext in ['.m4a', '.mp3', '.ogg', '.opus', '.wav']:
-                    if os.path.exists(base + ext):
-                        filename = base + ext
-                        break
-
-            bot.edit_message_text("🚀 Şarkı indirildi! Telegram'a yükleniyor...", chat_id, status_msg.message_id)
+        bot.edit_message_text("🚀 Şarkı bulundu! Telegram'a yükleniyor...", chat_id, status_msg.message_id)
+        
+        # Ses dosyasını indirip Telegram'a gönderme
+        audio_data = requests.get(audio_url).content
+        filename = f"{artist} - {title}.mp3"
+        
+        with open(filename, 'wb') as f:
+            f.write(audio_data)
             
-            with open(filename, 'rb') as audio:
-                bot.send_audio(chat_id, audio, caption=f"🎵 {video_info.get('title')} - İndiren: @{bot.get_me().username}")
+        with open(filename, 'rb') as audio:
+            bot.send_audio(chat_id, audio, caption=f"🎵 {artist} - {title}\nİndiren: @{bot.get_me().username}")
             
-            os.remove(filename)
-            bot.delete_message(chat_id, status_msg.message_id)
-            
+        os.remove(filename)
+        bot.delete_message(chat_id, status_msg.message_id)
+        
     except Exception as e:
-        # Eğer SoundCloud'da da sorun olursa YouTube tekli format dene (Alternatif yedek plan)
-        try:
-            ydl_opts['default_search'] = 'ytsearch1'
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(query, download=True)
-                video_info = info['entries'] if 'entries' in info else info
-                filename = ydl.prepare_filename(video_info)
-                
-                with open(filename, 'rb') as audio:
-                    bot.send_audio(chat_id, audio, caption=f"🎵 {video_info.get('title')}")
-                os.remove(filename)
-                bot.delete_message(chat_id, status_msg.message_id)
-        except Exception as e2:
-            bot.edit_message_text(f"❌ Şarkı teliften veya korumadan dolayı indirilemedi. Lütfen başka bir şarkı adı deneyin.", chat_id, status_msg.message_id)
+        bot.edit_message_text("❌ Sunucu bağlantısında bir sorun oluştu, lütfen az sonra tekrar deneyin.", chat_id, status_msg.message_id)
+        print(f"Hata: {e}")
 
 if __name__ == "__main__":
     bot.infinity_polling()
